@@ -4,11 +4,11 @@ QLIB's integration requires to implement SPI tunneling callback
 PLAT_SPI_WriteReadTransaction(), so security-related spi commands can reach the W77Q chip.
 This project show several ways to implement such function in Linux user mode environment.
 
-1. [Using spi_dev interface](#spi_dev)  
-2. [Using spi_bridge kernel module](#spi_bridge_kernel)
+1. [Using spi_dev interface](#using-spi_dev-interface)  
+2. [Using spi_bridge kernel module](#using-spi_bridge-kernel-module)
 
 
-## 1. Using spi_dev interface {#spi_dev} 
+## 1. Using spi_dev interface
 
 When spi connection es exposed via SPI_DEV interface the callback implementation is 
 straightforward - it will use linux built in SPI_DEV ioctl to perform spi transactions.
