@@ -4,11 +4,11 @@ QLIB's integration requires to implement SPI tunneling callback
 PLAT_SPI_WriteReadTransaction(), so security-related spi commands can reach the W77Q chip.
 This project show several ways to implement such function in Linux user mode environment.
 
-1. [Using spi_dev interface](#using-spi_dev-interface)  
-2. [Using spi_bridge kernel module](#using-spi_bridge-kernel-module)
+* [Using spi_dev interface](#using-spi_dev-interface)  
+* [Using spi_bridge kernel module](#using-spi_bridge-kernel-module)
 
 
-## 1. Using spi_dev interface
+## Using spi_dev interface
 
 When spi connection es exposed via SPI_DEV interface the callback implementation is 
 straightforward - it will use linux built in SPI_DEV ioctl to perform spi transactions.
@@ -50,7 +50,7 @@ When running the test we can see that JEDEC ID EF 4A 18 is retrieved correctly
 ( w77q128jv chip ) along ans SSR value makes sense.
 
 
-## 2. Using spi_bridge kernel module
+## Using spi_bridge kernel module
 
 Sometimes chip is exposed via SPI_NOR/MTD interface. In this case spi_dev will not be available and we must look for another way to implement the spi callback and this is where kernel spi_bridge module comes to help. The idea is that kernel module will find w77q flash and expose ioctl function to user mode. Files:
 
