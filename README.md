@@ -50,7 +50,7 @@ When running the test we can see that JEDEC ID EF 4A 18 is retrieved correctly
 ( w77q128jv chip ) along ans SSR value makes sense.
 
 
-## 2. Using spi_bridge kernel module {#spi_bridge_kernel}
+## 2. Using spi_bridge kernel module
 
 Sometimes chip is exposed via SPI_NOR/MTD interface. In this case spi_dev will not be available and we must look for another way to implement the spi callback and this is where kernel spi_bridge module comes to help. The idea is that kernel module will find w77q flash and expose ioctl function to user mode. Files:
 
