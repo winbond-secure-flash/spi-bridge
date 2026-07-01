@@ -107,7 +107,9 @@ int PLAT_SPI_WriteReadTransaction(const void*     userData,
     struct spi_ioc_transfer xfer;
 
     ASSERT_MSG_RET(userData, -1, "Error: Plaftform handle is NULL\n");
-    
+    (void)format;
+    (void)flags;
+	    
     int fd = *((int *)userData);
      
     // Validate inputs
