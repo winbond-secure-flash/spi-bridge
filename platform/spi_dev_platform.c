@@ -28,9 +28,6 @@
     
 #define SPI_BITS    8
 
-
-
-
 // this is needed when core reset is done by qlib at the end of the fw update sequence
 void CORE_RESET(void){}// dummy
 
@@ -71,6 +68,25 @@ void close_spi_fd(int fd)
 {
     close(fd);
 }
+
+static int fd_g = -1;
+
+void* QLIB_SAMPLE_GetUserData(void)
+{
+    fd_g = open_spi_fd();
+    return fd_g < 0 ? NULL : &fd_g; 
+}
+
+void QLIB_SAMPLE_ReleaseUserData(void* userData_pv)
+{
+	if (userData_pv)
+	{
+		int *fd = (int *)userData_pv;	
+		close_spi_fd(*fd);
+		*fd = -1;
+	}
+}
+
 
 int PLAT_SPI_WriteReadTransaction(const void*     userData,
                                   QLIB_BUS_MODE_T format,
