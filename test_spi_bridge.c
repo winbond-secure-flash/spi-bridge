@@ -13,12 +13,13 @@
 #error "unknown spi platform to use"
 #endif
 
+
 int main(int argc, char** argv) {
 
     int ret;
     QLIB_BUS_MODE_T fmt = QLIB_BUS_MODE_1_1_1;
         
-	void *flash_handle = QLIB_SAMPLE_GetUserData();
+	void *flash_handle = QLIB_SAMPLE_GetFlashHandle();
     if (flash_handle == NULL)
 	{
         perror("Failed to open device");
@@ -55,6 +56,6 @@ int main(int argc, char** argv) {
   
     printf("   Data Read: 0x%02X 0x%02X 0x%02X 0x%02X\n", ssr_rx_data[0], ssr_rx_data[1], ssr_rx_data[2], ssr_rx_data[3]);
 
-    QLIB_SAMPLE_ReleaseUserData(flash_handle);
+    QLIB_SAMPLE_ReleaseFlashHandle(flash_handle);
     return 0;
 }

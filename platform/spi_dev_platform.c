@@ -71,13 +71,13 @@ void close_spi_fd(int fd)
 
 static int fd_g = -1;
 
-void* QLIB_SAMPLE_GetUserData(void)
+void* QLIB_SAMPLE_GetFlashHandle(void)
 {
     fd_g = open_spi_fd();
     return fd_g < 0 ? NULL : &fd_g; 
 }
 
-void QLIB_SAMPLE_ReleaseUserData(void* userData_pv)
+void QLIB_SAMPLE_ReleaseFlashHandle(void* userData_pv)
 {
 	if (userData_pv)
 	{
