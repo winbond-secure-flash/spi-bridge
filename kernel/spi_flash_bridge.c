@@ -121,15 +121,18 @@ static int spi_msg_send(      struct spi_device *spi,
     {
        spi_message_add_tail(&t_dummy, &m);
     }
-
+       
     if (data_in_len > 0)
     {
        spi_message_add_tail(&t_rx, &m);
     }
 
     ret = is_bus_locked ? spi_sync_locked(spi, &m) : spi_sync(spi, &m);
-    ASSERT_MSG_RET(0 == ret, ret, "Failed spi_sync%s with status %d\n", is_bus_locked ? "_locked" : "", ret);
+    ASSERT_MSG_RET(0 == ret, ret, "spi_sync%s failure, status %d\n", is_bus_locked ? "_locked" : "", ret);
 
+    PRINT_DBG("spi_sync%s success: cmd=%02x, addr_len=%u, dummy=%u, data_in_len=%u, data_out_len=%u\n",
+                is_bus_locked ? "_locked" : "",  tx[0], addr_len, dummy_len, data_in_len, data_out_len);
+        
     return 0;
 }
 
@@ -157,7 +160,9 @@ static int spi_mem_send(      struct spi_device *spi,
 
     ASSERT_MSG_RET(spi && tx, -EINVAL, "Null pointers provided\n");
     ASSERT_MSG_RET(cmd_len == 1, -EINVAL, "Opcode size(%d) should be 1 byte\n", cmd_len);
-      
+    
+
+    
     // dataOutStream = [ Opcode (1) | Address (addressSize) | DataOut (dataOutSize) ]
     u8 opcode = tx[0];
     p_addr = tx + cmd_len;
@@ -222,11 +227,15 @@ static int spi_mem_send(      struct spi_device *spi,
 
     ASSERT_MSG_RET (spi_mem_supports_op(&mem, &op), -EINVAL,
                     "Transaction rejected by controller: cmd=%02x, addr_len=%u, dummy=%u, data_len=%u\n",
-                     opcode, op.addr.nbytes, dummy_len, (data_in_len ? data_in_len : data_out_len));
+                     opcode, op.addr.nbytes,
+                     dummy_len, (data_in_len ? data_in_len : data_out_len));
                         
     ret = spi_mem_exec_op(&mem, &op);
-    ASSERT_MSG_RET(0 == ret, ret, "Failed spi_mem_exec_op, status %d\n", ret); 
-        
+    
+    ASSERT_MSG_RET(0 == ret, ret, "spi_mem_exec_op failure, status %d\n", ret); 
+    PRINT_DBG("spi_mem_exec_op success: cmd=%02x, addr_len=%u, dummy=%u, data_len=%u\n",
+                opcode, op.addr.nbytes, dummy_len, (data_in_len ? data_in_len : data_out_len));
+    
     return 0;
 }
 
@@ -242,8 +251,19 @@ static int kernel_spi_send(          struct spi_device *spi,
                                      uint32_t           data_in_len)
 {
 
+
     ASSERT_MSG_RET((cmd_len + addr_len + data_out_len) <= MAX_SPI_BUF, -EINVAL, "Tx size exceeds %d\n", MAX_SPI_BUF);
     ASSERT_MSG_RET(data_in_len <= MAX_SPI_BUF,                         -EINVAL, "Rx size exceeds %d\n", MAX_SPI_BUF);
+
+#ifdef MOVE_CTAG_TO_DATA_PHASE
+
+    if (tx[0] = 0xa1 && addr_len > 0)
+    {
+        data_out_len += addr_len;
+        addr_len = 0;
+    }
+
+#endif
 
     return  spi->controller->mem_ops && bridge_over_mem_spi ? 
             // flow for NXP, ST QSPI, etc. which use fsl-qspi

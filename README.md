@@ -71,8 +71,8 @@ It turns out that sometimes linux will apply maximum spi speed possible for the 
 and this number will not fit for our spi nor flash. For instance rp4 uses bcm2835_spi and
 sets speed to 125MHz. To solve that module sets speed to confirmed working 5MHZ 
 and spi mode single, see functions : enforce_working_spi_params / restore_original_spi_params.
-Set **WORKING_TARGET_SPI_SPEED** to 0 to disable the working parameters setting and keeping 
-what ever protocol driver set before.
+Set **WORKING_TARGET_SPI_SPEED** to 0 to disable the working parameters setting and keeping values
+that protocol driver or DT had set before.
 
 * **Debugging**   
 Uncomment PRINT_DBG macro definition to see every spi transaction in kernel log
@@ -80,6 +80,7 @@ Uncomment PRINT_DBG macro definition to see every spi transaction in kernel log
 * **Default target jedec id**   
 If no parameter passed to the module default one will be used: EF 4A 18 ( w77q128jv).
 
+ 
 ### How to build kernel module  
 
 Build and insert
@@ -149,6 +150,23 @@ Platform init over kernel ioctl
 app@rp4:~/proj/spi_kernel_bridge $  
 ```
 We can see how the JEDEC ID and SSR values are sucessfully retrieved via spi transaction to flash.  
+
+
+## Troubleshoot
+### I get dmesg output like this: Transaction rejected by controller: ...
+
+There can me several reasons underlying controller rejects the transaction:
+1. size of the data buffer qlib tries to send exceeds the maximum spi controller supports.  
+
+In that case adjust qlib definitions QLIB_MAX_SPI_INPUT_SIZE/QLIB_MAX_SPI_OUTPUT_SIZE to values that will satisfy your spi controller size limit.
+
+2. Frequency of the device to 5 MH is not supported
+
+During the transaction the frequency of the spi device is lowered to 5MH to ensure working frequence range. THis is done since sometimes DT of the spi interfaces may contain very high spi frequency values. In your setup this may be completely unnessasary to do so set definition of   WORKING_TARGET_SPI_SPEED to zero to disable frequency change. 
+
+
+
+
 
 ## MISC: Project structure  
 ```shell

@@ -20,11 +20,17 @@
 #include "bridge_common.h" 
 
 
-
+#ifndef SPI_DEVICE
 #define SPI_DEVICE "/dev/spidev0.0"
-#define SPI_MODE    SPI_MODE_0
-#define SPI_SPEED   5000000  // 5 MHz
+#endif //SPI_DEVICE
 
+#ifndef SPI_MODE
+#define SPI_MODE    SPI_MODE_0
+#endif //SPI_MODE
+
+#ifndef SPI_SPEED
+#define SPI_SPEED   5000000  // 5 MHz
+#endif //SPI_SPEED 
     
 #define SPI_BITS    8
 
