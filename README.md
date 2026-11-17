@@ -66,24 +66,14 @@ Sometimes chip is exposed via SPI_NOR/MTD interface. In this case spi_dev will n
 * **Userland ioctls are exposed**   
 Ioctl is used to implement qlib spi callback. 
 
-* **Working spi parameters are applied during usage**   
-It turns out that sometimes linux will apply maximum spi speed possible for the devices,
-and this number will not fit for our spi nor flash. For instance rp4 uses bcm2835_spi and
-sets speed to 125MHz. To solve that module sets speed to confirmed working 5MHZ 
-and spi mode single, see functions : enforce_working_spi_params / restore_original_spi_params.
-Set **WORKING_TARGET_SPI_SPEED** to 0 to disable the working parameters setting and keeping values
-that protocol driver or DT had set before.
-
-* **Debugging**   
-Uncomment PRINT_DBG macro definition to see every spi transaction in kernel log
 
 * **Default target jedec id**   
 If no parameter passed to the module default one will be used: EF 4A 18 ( w77q128jv).
 
  
-### How to build kernel module  
+### How to build kernel module
 
-Build and insert
+Build and insert:
 
 ```shell
 app@rp4:~/proj/spi_kernel_bridge/kernel $ make
@@ -95,7 +85,35 @@ make[1]: Entering directory '/usr/src/linux-headers-6.12.47+rpt-rpi-v8'
 make[1]: Leaving directory '/usr/src/linux-headers-6.12.47+rpt-rpi-v8'
 app@rp4:~/proj/spi_kernel_bridge/kernel $ sudo insmod spi_flash_bridge.ko 
 ```
-We did not pass any jdec id during insertion, so default JEDEC ID was used which is EF 4A 18 ( w77q128jv).
+
+The kernel Makefile also accepts optional compile-time configuration overrides. Leave an option
+unset to use the default from `kernel/spi_flash_bridge.c`. For example:
+
+```shell
+make DRIVER_NAME=spi_flash_bridge_test WORKING_TARGET_SPI_SPEED=5000000
+make 'TARGET_JEDEC_VALUE={0xEF,0x4A,0x18}' MOVE_CTAG_TO_DATA_PHASE=1
+make SHARED_INCLUDE_DIR=/path/to/shared/headers
+```
+
+`SHARED_INCLUDE_DIR` specifies where shared headers such as `bridge_common.h` are located. It
+defaults to the project root (one directory above `kernel/`); set it when the header is stored
+elsewhere.
+
+Other supported configuration variables are:
+
+- `DRIVER_NAME` — module and character-device name. Defaults to `spi_flash_bridge`.
+- `TARGET_JEDEC_VALUE` — three-byte JEDEC ID used to identify the target flash. Defaults to
+  `{0xEF, 0x4a, 0x18}`.
+- `WORKING_TARGET_SPI_SPEED` — maximum SPI speed in Hz applied to the target during initialization.
+  `0` leaves the configured speed and mode unchanged; the source default is `0`.
+- `MOVE_CTAG_TO_DATA_PHASE` — set to `1` to move the `0xA1` CTAG byte from the address phase to
+  the data-out phase for controllers that cannot transmit it in the address phase. Defaults to `0`.
+- `USE_MEM_SPI` — set to `1` to use the SPI-mem interface when the controller supports it,
+  otherwise use legacy SPI transfers. Set to `0` to always use legacy SPI. Defaults to `1`.
+- `MEMSPI_IGNORES_DUMMY_ON_ZERO_ADDR_PHASE` — set to `1` to enable the SPI-mem workaround for
+  controllers that ignore dummy cycles when the address phase is absent. Defaults to `0`.
+
+We did not pass any JEDEC ID during insertion, so default JEDEC ID was used which is EF 4A 18 ( w77q128jv).
 Since this is a flash connected we will can confirm it is found via kernel log
 
 ```shell
@@ -127,7 +145,7 @@ pp@rp4:~ $ dmesg | tail -n 10
 app@rp4:~ $ 
 ```
 
-Now let's run simple test from userspace and see if can get fusing ioctl:
+Now let's run simple test from userspace and see if can use ioctl:
 1) same JEDEC ID 2) SSR value ( Secure status register) . 
 
 ```shell
@@ -159,13 +177,6 @@ There can me several reasons underlying controller rejects the transaction:
 1. size of the data buffer qlib tries to send exceeds the maximum spi controller supports.  
 
 In that case adjust qlib definitions QLIB_MAX_SPI_INPUT_SIZE/QLIB_MAX_SPI_OUTPUT_SIZE to values that will satisfy your spi controller size limit.
-
-2. Frequency of the device to 5 MH is not supported
-
-During the transaction the frequency of the spi device is lowered to 5MH to ensure working frequence range. THis is done since sometimes DT of the spi interfaces may contain very high spi frequency values. In your setup this may be completely unnessasary to do so set definition of   WORKING_TARGET_SPI_SPEED to zero to disable frequency change. 
-
-
-
 
 
 ## MISC: Project structure  

@@ -8,36 +8,87 @@
 #include <linux/slab.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/spi-mem.h>
+#include <linux/pm_runtime.h>
+#include <linux/ktime.h>
+#include <linux/delay.h>
 
-#define SPI_BRIDGE_VERSION "0.1"
+#define SPI_BRIDGE_VERSION "0.2"
 
+//*****************************************************************************
+// Static configuration tweaks, that can be defined outside of this file
+//*****************************************************************************
+
+// kernel module name that this module will create.
+#ifndef DRIVER_NAME
 #define DRIVER_NAME "spi_flash_bridge"
+#endif
 
-#define PRINT_ERR(fmt, ...)     pr_err("[" DRIVER_NAME "] " fmt, ##__VA_ARGS__)
-#define PRINT_INFO(fmt, ...)     pr_info("[" DRIVER_NAME "] " fmt, ##__VA_ARGS__)
-#define PRINT_DBG(fmt, ...)     //pr_info("[" DRIVER_NAME "] " fmt, ##__VA_ARGS__)
+// flash that module will look for among all spi devices
+#ifndef TARGET_JEDEC_VALUE
+#define TARGET_JEDEC_VALUE {0xEF, 0x4a, 0x18} // default JEDEC IS of w77q128jv
+#endif
 
-#include "../bridge_common.h"
-
-//*****************************************************************************
 // Working spi parameters for chip. Set to spi device since its original values 
-// can not fit. For instance rp4 bcm2835_spi sets to 125MHz, which is too high.
-// set WORKING_TARGET_SPI_SPEED to 0 to disable the working parameters setting 
-// and keeping what ever protocol driver set before.
+// set by DT can not fit the chip. For instance rp4 bcm2835_spi sets to 125MHz,
+// which is too high. Set WORKING_TARGET_SPI_SPEED to 0 to disable setting the
+// spi interface to working frequency, or set explcit frequency value
+#ifndef WORKING_TARGET_SPI_SPEED
+#define WORKING_TARGET_SPI_SPEED 0  //5000000(working speed for rp4/spi_dev)
+#endif
+
+// Some spi controllers will not let proprietary ctag value pass in the address  
+// phase. So we move ctag value to data phase.
+// 0 - disabled
+// 1 - enabled 
+#ifndef MOVE_CTAG_TO_DATA_PHASE
+#define MOVE_CTAG_TO_DATA_PHASE 0
+#endif
+
+// 0 - do NOT use spi_mem interface, use legacy spi only. 
+// 1 - use mem_spi interface if available, if not available use legacy spi 
+#ifndef USE_MEM_SPI
+#define USE_MEM_SPI 1
+#endif
+
+// Some mem_spi interfaces ignore dummy cycles on zero data phase, in such 
+// case workaround will be - read more data as dummy bytes and drop them later
+// 0 - workaround is disables 
+// 1 - workaround is enabled 
+// f.i. on AST2700 this value is 1
+#ifndef MEMSPI_IGNORES_DUMMY_ON_ZERO_ADDR_PHASE
+#define MEMSPI_IGNORES_DUMMY_ON_ZERO_ADDR_PHASE 0
+#endif 
+
+//*****************************************************************************
+// PRINT_ERR uses KERN_ERR; PRINT_INFO uses KERN_INFO. Console visibility:
+//   dmesg -n 4  # errors and more severe messages
+//   dmesg -n 6  # errors, info, and more severe messages
+//*****************************************************************************
+#define PRINT_ERR(fmt, ...)  printk(KERN_ERR "[" DRIVER_NAME "] " fmt, ##__VA_ARGS__)
+#define PRINT_INFO(fmt, ...) printk(KERN_INFO "[" DRIVER_NAME "] " fmt, ##__VA_ARGS__)
+
+//*****************************************************************************
+// PRINT_DBG when CONFIG_DYNAMIC_DEBUG is available:
+// Enable with:
+//   echo 'file spi_flash_bridge.c +p' > /sys/kernel/debug/dynamic_debug/control
+// Disable with:
+//   echo 'file spi_flash_bridge.c -p' > /sys/kernel/debug/dynamic_debug/control
+// If dynamic debug is unavailable, build with DEBUG to enable PRINT_DBG.
+//*****************************************************************************
+#define PRINT_DBG(fmt, ...)  pr_debug("[" DRIVER_NAME "] " fmt, ##__VA_ARGS__)
+
+//*****************************************************************************
+// Include common file that contains ioctl values 
 //*****************************************************************************
 
-#define WORKING_TARGET_SPI_SPEED 5000000 // 5 MHz (Confirmed working speed)
+#include "bridge_common.h"
 
 //*****************************************************************************
 // Module parameters
 //*****************************************************************************
 
-// if 1 kernel transaction will be send via mem-spi (if available), otherwise via legacy
-static u8 bridge_over_mem_spi = 1;
-
 #define TARGET_JEDEC_LEN 3
-// 0xEF, 0x4a, 0x18 is a JEDEC IS of w77q128jv and it is default
-static unsigned int jedec_id[TARGET_JEDEC_LEN] = {0xEF, 0x4a, 0x18}; 
+static unsigned int jedec_id[TARGET_JEDEC_LEN] = TARGET_JEDEC_VALUE; 
 static int jedec_id_count = TARGET_JEDEC_LEN; 
 static u8 target_jedec_id[TARGET_JEDEC_LEN];
 
@@ -59,7 +110,6 @@ static int bridge_validate_params(void)
     return 0;
 }
 
-
 //*****************************************************************************
 // Globals
 //*****************************************************************************
@@ -67,14 +117,15 @@ static int bridge_validate_params(void)
 struct bridge_context {
     struct spi_device *spi;
     struct bridge_transaction trans ____cacheline_aligned;
-    u32 orig_mode;
-    u32 orig_speed;
     bool bus_is_locked;
+    ktime_t lock_t0;                // when LOCK_BUS was taken
     struct mutex context_lock;
 };
 
-// Global pointer for the found device 
+// Global pointer for the found device
 static struct spi_device *target_spi_dev = NULL;
+static u32 target_original_mode;
+static u32 target_original_speed;
 static dev_t dev_num;
 static struct cdev my_cdev;
 static struct class *my_class;
@@ -90,6 +141,11 @@ static struct
 //*****************************************************************************
 // spi_XXX_send functions: spi_mem_send for mem-spi, and spi_msg_send for legacy
 //*****************************************************************************
+
+static bool uses_mem_spi(struct spi_controller *ctlr)
+{
+    return ctlr->mem_ops && USE_MEM_SPI;
+}
 
 static unsigned char dummy_tx_buf[MAX_SPI_BUF] = {0};
 static int spi_msg_send(      struct spi_device *spi,
@@ -138,6 +194,21 @@ static int spi_msg_send(      struct spi_device *spi,
 
 
 
+
+static int spi_mem_exec_op_locked(struct spi_mem *mem, const struct spi_mem_op *op)
+{
+    struct spi_controller *ctlr = mem->spi->controller;
+
+    // bus_lock_mutex + io_mutex are already held by IOCTL_LOCK_BUS
+    ASSERT_MSG_RET(ctlr->mem_ops && ctlr->mem_ops->exec_op, -EOPNOTSUPP,
+                   "Controller has no exec_op\n");
+    
+    return ctlr->mem_ops->exec_op(mem, op);
+}
+
+
+
+
 // TODO: ensure cmdSize is one at upper layers                                                 
 static int spi_mem_send(      struct spi_device *spi,
                               bool               is_bus_locked,
@@ -157,6 +228,7 @@ static int spi_mem_send(      struct spi_device *spi,
     u32 effective_addr_len;
     u32 i;
     int ret;
+    bool discard_dummy_bytes = false;
 
     ASSERT_MSG_RET(spi && tx, -EINVAL, "Null pointers provided\n");
     ASSERT_MSG_RET(cmd_len == 1, -EINVAL, "Opcode size(%d) should be 1 byte\n", cmd_len);
@@ -191,14 +263,30 @@ static int spi_mem_send(      struct spi_device *spi,
             addr_val = (addr_val << 8) | (p_data_out[i] & 0xFF);
         }
 
-        /* Construct Read Operation */
-        op = (struct spi_mem_op)SPI_MEM_OP(
-            SPI_MEM_OP_CMD(opcode, 1),
-            SPI_MEM_OP_ADDR(effective_addr_len, addr_val, 1),
-            SPI_MEM_OP_DUMMY(dummy_len, 1),
-            SPI_MEM_OP_DATA_IN(data_in_len, data_in, 1)
-        );
+        if (MEMSPI_IGNORES_DUMMY_ON_ZERO_ADDR_PHASE != 0 && effective_addr_len == 0 && dummy_len > 0)
+        {
 
+            ASSERT_MSG_RET(data_in_len + dummy_len <= MAX_SPI_BUF, -EINVAL,
+                           "Read Op: data(%u) + dummy(%u) > %d\n", data_in_len, dummy_len, MAX_SPI_BUF);
+
+            op = (struct spi_mem_op)SPI_MEM_OP(
+                SPI_MEM_OP_CMD(opcode, 1),
+                SPI_MEM_OP_NO_ADDR,
+                SPI_MEM_OP_NO_DUMMY,
+                SPI_MEM_OP_DATA_IN(data_in_len + dummy_len, data_in, 1)
+            );
+            
+            discard_dummy_bytes = true;
+        }
+        else
+        {
+            op = (struct spi_mem_op)SPI_MEM_OP(
+                SPI_MEM_OP_CMD(opcode, 1),
+                SPI_MEM_OP_ADDR(effective_addr_len, addr_val, 1),
+                SPI_MEM_OP_DUMMY(dummy_len, 1),
+                SPI_MEM_OP_DATA_IN(data_in_len, data_in, 1)
+            );
+        }
     } 
     // CASE 2: WRITE OPERATION
     // We keep Address separate and use DataOut as the payload.
@@ -221,7 +309,6 @@ static int spi_mem_send(      struct spi_device *spi,
             SPI_MEM_OP_NO_DUMMY,
             SPI_MEM_OP_DATA_OUT(data_out_len, p_data_out, 1)
         );
-
         
     }
 
@@ -230,13 +317,71 @@ static int spi_mem_send(      struct spi_device *spi,
                      opcode, op.addr.nbytes,
                      dummy_len, (data_in_len ? data_in_len : data_out_len));
                         
-    ret = spi_mem_exec_op(&mem, &op);
-    
-    ASSERT_MSG_RET(0 == ret, ret, "spi_mem_exec_op failure, status %d\n", ret); 
-    PRINT_DBG("spi_mem_exec_op success: cmd=%02x, addr_len=%u, dummy=%u, data_len=%u\n",
-                opcode, op.addr.nbytes, dummy_len, (data_in_len ? data_in_len : data_out_len));
+    ret = is_bus_locked ? spi_mem_exec_op_locked(&mem, &op) : spi_mem_exec_op(&mem, &op);
+
+    ASSERT_MSG_RET(0 == ret, ret, "spi_mem_exec_op%s failure, status %d\n", is_bus_locked ? "_locked" : "", ret);
+
+    // drop the bytes clocked during the dummy phase
+    if (MEMSPI_IGNORES_DUMMY_ON_ZERO_ADDR_PHASE != 0 && discard_dummy_bytes)
+    {
+        memmove(data_in, data_in + dummy_len, data_in_len);
+    }
+   
+    if (data_in_len > 0)
+    {
+        PRINT_DBG("op %02X addr[%u]=%llx dummy %u IN %u : %*ph\n",
+                   opcode, op.addr.nbytes, (unsigned long long)op.addr.val, dummy_len,
+                   data_in_len, min_t(int, data_in_len, 16), data_in);
+    }
+    else
+    {
+        PRINT_DBG("op %02X addr[%u]=%llx OUT %u : %*ph\n",
+                   opcode, op.addr.nbytes, (unsigned long long)op.addr.val,
+                   data_out_len, min_t(int, data_out_len, 16), p_data_out);
+    }
+                    
+    return 0;
+}
+
+
+
+static int kernel_spi_bus_lock(struct spi_controller *ctlr)
+{
+    if (uses_mem_spi(ctlr))
+    {
+        if (ctlr->auto_runtime_pm)
+        {
+            int ret = pm_runtime_resume_and_get(ctlr->dev.parent);
+            ASSERT_MSG_RET(ret >= 0, ret, "Failed to power controller: %d\n", ret);
+        }
+
+        mutex_lock(&ctlr->bus_lock_mutex);
+        mutex_lock(&ctlr->io_mutex);
+    }
+    else
+    {
+        spi_bus_lock(ctlr);
+    }
     
     return 0;
+}
+
+static void kernel_spi_bus_unlock(struct spi_controller *ctlr)
+{
+    if (uses_mem_spi(ctlr))
+    {
+        mutex_unlock(&ctlr->io_mutex);
+        mutex_unlock(&ctlr->bus_lock_mutex);
+
+        if (ctlr->auto_runtime_pm)
+        {
+            pm_runtime_put(ctlr->dev.parent);
+        }
+    }
+    else
+    {
+        spi_bus_unlock(ctlr);
+    }
 }
 
 
@@ -255,17 +400,16 @@ static int kernel_spi_send(          struct spi_device *spi,
     ASSERT_MSG_RET((cmd_len + addr_len + data_out_len) <= MAX_SPI_BUF, -EINVAL, "Tx size exceeds %d\n", MAX_SPI_BUF);
     ASSERT_MSG_RET(data_in_len <= MAX_SPI_BUF,                         -EINVAL, "Rx size exceeds %d\n", MAX_SPI_BUF);
 
-#ifdef MOVE_CTAG_TO_DATA_PHASE
-
-    if (tx[0] = 0xa1 && addr_len > 0)
+    if (MOVE_CTAG_TO_DATA_PHASE == 0)
     {
-        data_out_len += addr_len;
-        addr_len = 0;
+        if (tx[0] == 0xa1 && addr_len > 0)
+        {
+            data_out_len += addr_len;
+            addr_len = 0;
+        }
     }
-
-#endif
-
-    return  spi->controller->mem_ops && bridge_over_mem_spi ? 
+    
+    return  uses_mem_spi(spi->controller) ? 
             // flow for NXP, ST QSPI, etc. which use fsl-qspi
             spi_mem_send(spi, is_bus_locked, tx, cmd_len, addr_len, data_out_len, dummy_len, data_in, data_in_len) :
             // flow for those controllers which do not support spi-mem
@@ -354,27 +498,40 @@ static int find_target_device(struct device *dev, void *data)
     }
     
     ret = enforce_working_spi_params(spi, &original_mode, &original_speed);
-    ASSERT_MSG(0 == ret, "enforce_working_spi_params failed, status %d\n", ret);
+    if (ret != 0)
+    {
+        PRINT_ERR("enforce_working_spi_params failed, status %d\n", ret);
+        kfree(tx_cmd);
+        kfree(rx_id_buf);
+        return 0;
+    }
 
     *tx_cmd = 0x9F;
     ret = kernel_spi_send(spi, false, tx_cmd, 1, 0, 0, 0, rx_id_buf, 3);
-    ASSERT_MSG_RET(0 == ret, 0, "GET JDEC failed for %s. Error: %d\n", dev_name(&spi->dev), ret); 
+    if (ret != 0)
+    {
+        PRINT_ERR("GET JDEC failed for %s. Error: %d\n", dev_name(&spi->dev), ret);
+        restore_original_spi_params(spi, original_mode, original_speed);
+        kfree(tx_cmd);
+        kfree(rx_id_buf);
+        return 0;
+    }
         
     if (0 == memcmp(target_jedec_id, rx_id_buf, 3))
     {        
         PRINT_INFO("Dev: %s, ID: 0x%02X%02X%02X - Found flash via %s!\n",
-            dev_name(&spi->dev), rx_id_buf[0], rx_id_buf[1], rx_id_buf[2], 
-            spi->controller->mem_ops && bridge_over_mem_spi ? "MEM_SPI" : "SPI_LEGACY");
-        target_spi_dev = spi;
+            dev_name(&spi->dev), rx_id_buf[0], rx_id_buf[1], rx_id_buf[2],
+            uses_mem_spi(spi->controller) ? "MEM_SPI" : "SPI_LEGACY");
+        target_spi_dev = spi_dev_get(spi);
+        target_original_mode = original_mode;
+        target_original_speed = original_speed;
     }
     else
     {
         PRINT_INFO("Device: %s, ID: 0x%02X%02X%02X - Mismatch!\n",
                     dev_name(&spi->dev), rx_id_buf[0], rx_id_buf[1], rx_id_buf[2]);
+        restore_original_spi_params(spi, original_mode, original_speed);
     }
-
-    // Restore original parameters
-    restore_original_spi_params(spi, original_mode, original_speed);
     
     // Clean up allocated buffers
     kfree(tx_cmd);
@@ -404,10 +561,12 @@ static long bridge_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
             ret = -EBUSY;
             goto out;
         }
+        
 
-        // Another process
+        // protection from another process
         mutex_lock(&global_bus_mgr.lock);
-        if (global_bus_mgr.owner != NULL) {
+        if (global_bus_mgr.owner != NULL)
+        {
             mutex_unlock(&global_bus_mgr.lock);
             ret = -EBUSY; 
             PRINT_INFO("Hardware is busy with another app.\n");
@@ -418,9 +577,19 @@ static long bridge_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         global_bus_mgr.owner = ctx;
         mutex_unlock(&global_bus_mgr.lock);
 
-        spi_bus_lock(ctx->spi->controller);
+        ret = kernel_spi_bus_lock(ctx->spi->controller);
+        if (ret)
+        {
+            mutex_lock(&global_bus_mgr.lock);
+            global_bus_mgr.owner = NULL;
+            mutex_unlock(&global_bus_mgr.lock);
+            goto out;
+        }
+        
         ctx->bus_is_locked = true;
-        PRINT_INFO("Bus LOCKED globally by this process.\n");
+        ctx->lock_t0 = ktime_get();
+        PRINT_INFO("Bus LOCKED globally by this process (%s).\n",
+                   bridge_is_mem_path(ctx->spi) ? "spi-mem mutexes" : "spi_bus_lock");
         break;
 
         
@@ -433,7 +602,7 @@ static long bridge_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         }
 
         // Release Hardware
-        spi_bus_unlock(ctx->spi->controller);
+        kernel_spi_bus_unlock(ctx->spi->controller);
                 
         // Release Global Claim
         mutex_lock(&global_bus_mgr.lock);
@@ -441,7 +610,8 @@ static long bridge_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         mutex_unlock(&global_bus_mgr.lock);
 
         ctx->bus_is_locked = false;
-        PRINT_INFO("Bus UNLOCKED globally.\n");
+        PRINT_INFO("Bus UNLOCKED globally, held %lld us.\n",
+                   (long long)ktime_us_delta(ktime_get(), ctx->lock_t0));
         break;
 
     case IOCTL_SEND_SPI:
@@ -458,7 +628,6 @@ static long bridge_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
                              ctx->trans.dummy_len, ctx->trans.rx_buf, ctx->trans.data_in_len);
 
         ASSERT_MSG(0 == ret, "kernel_spi_transfer returned non-zero status %d\n", ret);
-        PRINT_DBG("spi_sync returned status %d\n", ret);
         
         ctx->trans.status = ret;
         if (copy_to_user((void __user *)arg, &ctx->trans, sizeof(struct bridge_transaction)))
@@ -499,9 +668,6 @@ static int bridge_open(struct inode *inode, struct file *file)
     mutex_init(&ctx->context_lock);
     file->private_data = ctx;
 
-    int ret = enforce_working_spi_params(ctx->spi, &ctx->orig_mode, &ctx->orig_speed);
-    ASSERT_MSG_RET(ret == 0, -EINVAL, "enforce_working_spi_params error %d\n", ret);
-
     return 0;
 }
 
@@ -511,10 +677,11 @@ static int bridge_release(struct inode *inode, struct file *file)
 
     if (ctx->bus_is_locked)
     {
-        PRINT_ERR("App crashed while holding lock. Cleaning up.\n");
+        PRINT_ERR("App closed/crashed while holding lock (held %lld us). Cleaning up.\n",
+                  (long long)ktime_us_delta(ktime_get(), ctx->lock_t0));
         
-        spi_bus_unlock(ctx->spi->controller);
-        restore_original_spi_params(ctx->spi, ctx->orig_mode, ctx->orig_speed);
+        kernel_spi_bus_unlock(ctx->spi->controller);
+        ctx->bus_is_locked = false;
 
         // Clear global owner
         mutex_lock(&global_bus_mgr.lock);
@@ -524,8 +691,6 @@ static int bridge_release(struct inode *inode, struct file *file)
         }
         mutex_unlock(&global_bus_mgr.lock);
     }
-    
-    restore_original_spi_params(ctx->spi, ctx->orig_mode, ctx->orig_speed);
 
     kfree(ctx);
     return 0;
@@ -554,10 +719,44 @@ static int __init bridge_init(void)
     global_bus_mgr.owner = NULL;
 
     ret = alloc_chrdev_region(&dev_num, 0, 1, DRIVER_NAME);
+    if (ret)
+    {
+        PRINT_ERR("alloc_chrdev_region failed: %d\n", ret);
+        return ret;
+    }
+
     cdev_init(&my_cdev, &fops);
-    cdev_add(&my_cdev, dev_num, 1);
-    my_class = class_create( DRIVER_NAME);
-    device_create(my_class, NULL, dev_num, NULL, DRIVER_NAME);
+    ret = cdev_add(&my_cdev, dev_num, 1);
+    if (ret)
+    {
+        PRINT_ERR("cdev_add failed: %d\n", ret);
+        unregister_chrdev_region(dev_num, 1);
+        return ret;
+    }
+
+    my_class = class_create(DRIVER_NAME);
+    if (IS_ERR(my_class))
+    {
+        ret = PTR_ERR(my_class);
+        PRINT_ERR("class_create failed: %d\n", ret);
+        cdev_del(&my_cdev);
+        unregister_chrdev_region(dev_num, 1);
+        my_class = NULL;
+        return ret;
+    }
+
+    struct device *device = device_create(my_class, NULL, dev_num, NULL, DRIVER_NAME);
+    if (IS_ERR(device))
+    {
+        ret = PTR_ERR(device);
+        PRINT_ERR("device_create failed: %d\n", ret);
+        class_destroy(my_class);
+        cdev_del(&my_cdev);
+        unregister_chrdev_region(dev_num, 1);
+        my_class = NULL;
+        return ret;
+    }
+
     return 0;
 }
 
@@ -575,6 +774,14 @@ static void __exit bridge_exit(void)
     class_destroy(my_class);
     cdev_del(&my_cdev);
     unregister_chrdev_region(dev_num, 1);
+
+    if (target_spi_dev)
+    {
+        restore_original_spi_params(target_spi_dev, target_original_mode, target_original_speed);
+    }
+
+    spi_dev_put(target_spi_dev);
+    target_spi_dev = NULL;
 }
 
 
