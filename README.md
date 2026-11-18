@@ -203,6 +203,7 @@ In that case adjust qlib definitions QLIB_MAX_SPI_INPUT_SIZE/QLIB_MAX_SPI_OUTPUT
         └── spi_dev_platform.c          => spi callback interface via spi_dev ioctl
    └── kernel
         ├── Makefile
+        ├── rp4_make.sh                 => Raspberry Pi 4 kernel module build wrapper
         └── spi_flash_bridge.c           => spi_bridge kernel module code       
    
 ```
