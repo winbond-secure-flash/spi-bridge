@@ -95,6 +95,17 @@ make 'TARGET_JEDEC_VALUE={0xEF,0x4A,0x18}' MOVE_CTAG_TO_DATA_PHASE=1
 make SHARED_INCLUDE_DIR=/path/to/shared/headers
 ```
 
+For a Raspberry Pi 4 setup that needs a 5 MHz working SPI speed, the example wrapper script
+`kernel/rp4_make.sh` runs the kernel build with `WORKING_TARGET_SPI_SPEED=5000000`. Run it from
+the `kernel/` directory:
+
+```shell
+./rp4_make.sh
+```
+
+This is a platform-specific example; edit or copy it for other platform-specific Makefile
+overrides.
+
 `SHARED_INCLUDE_DIR` specifies where shared headers such as `bridge_common.h` are located. It
 defaults to the project root (one directory above `kernel/`); set it when the header is stored
 elsewhere.
