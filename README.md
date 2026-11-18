@@ -21,6 +21,16 @@ ioctl will use /dev/spidev0.0.
 Files:
 * platform/spi_dev_platform.c - the spi callback implementation via spi_dev ioctl
 
+The SPI device path, mode, and speed can be overridden at compile time. The defaults in
+`platform/spi_dev_platform.c` are `/dev/spidev0.0`, `SPI_MODE_0`, and 5 MHz. For example, to
+build for `/dev/spidev1.0` at 1 MHz:
+
+```shell
+make spi_dev CFLAGS='-I. -I./platform -DUSE_SPI_DEV -DSPI_DEVICE=\"/dev/spidev1.0\" -DSPI_MODE=SPI_MODE_0 -DSPI_SPEED=1000000'
+```
+
+Use `SPI_MODE_0` through `SPI_MODE_3` for `SPI_MODE`, and specify `SPI_SPEED` in Hz.
+
 ### Let's simple test it
 
 Before connecting callback implementation to qlib, we can do simple test with two commands 
