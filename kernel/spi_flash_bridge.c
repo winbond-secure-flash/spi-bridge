@@ -588,8 +588,8 @@ static long bridge_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         
         ctx->bus_is_locked = true;
         ctx->lock_t0 = ktime_get();
-        PRINT_INFO("Bus LOCKED globally by this process (%s).\n",
-                   bridge_is_mem_path(ctx->spi) ? "spi-mem mutexes" : "spi_bus_lock");
+        PRINT_INFO("Bus LOCKED by %s bus lock.\n",
+                   uses_mem_spi(ctx->spi->controller) ? "spi-mem" : "legacy spi");
         break;
 
         
