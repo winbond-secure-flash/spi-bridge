@@ -400,7 +400,7 @@ static int kernel_spi_send(          struct spi_device *spi,
     ASSERT_MSG_RET((cmd_len + addr_len + data_out_len) <= MAX_SPI_BUF, -EINVAL, "Tx size exceeds %d\n", MAX_SPI_BUF);
     ASSERT_MSG_RET(data_in_len <= MAX_SPI_BUF,                         -EINVAL, "Rx size exceeds %d\n", MAX_SPI_BUF);
 
-    if (MOVE_CTAG_TO_DATA_PHASE == 0)
+    if (MOVE_CTAG_TO_DATA_PHASE == 1)
     {
         if (tx[0] == 0xa1 && addr_len > 0)
         {
